@@ -1,26 +1,34 @@
-﻿using ReadMQTTMessageSendPushNotification.Model;
+﻿using MQTTnet;
+using MQTTnet.Client;
+using MQTTnet.Client.Options;
+using MQTTnet.Extensions.ManagedClient;
+using MQTTnet.Protocol;
+using ReadMQTTMessageSendPushNotification.Model;
 using System;
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
-using uPLibrary.Networking.M2Mqtt;
-using uPLibrary.Networking.M2Mqtt.Messages;
 
 namespace ReadMessageSendPushNotification
 {
     class Program
     {
-        private static MqttClient _mqttClient;
+        private static IMqttClient _client;
+        private static MqttFactory _factory;
+        private static IMqttClientOptions _options;
+
         private static readonly List<string> MESSAGES = new List<string>();
 
-        static void Main(string[] args)
+        static async Task Main(string[] args)
         {
             LogStartupMessage();
             StartMqttClient();
+            await LogStartMqttConnection();
 
             while (true)
-                SendPushNotification();
+                await GetMessages();
         }
 
         private static void LogStartupMessage()
@@ -28,28 +36,27 @@ namespace ReadMessageSendPushNotification
             Console.WriteLine($"########## CAMPAINHA INTELIGENTE - MQTT LISTENER ##########\n");
         }
 
-        private static void StartMqttClient()
+        public static void StartMqttClient()
         {
-            LogMQTT("Instanciando client MQTT...", ConsoleColor.Yellow);
+            var messageBuilder = new MqttClientOptionsBuilder()
+                .WithClientId(MQTTProperties.CLIENT_ID)
+                .WithTcpServer(MQTTProperties.HOST_NAME, MQTTProperties.PORT)
+                .WithCleanSession();
 
-            _mqttClient = new MqttClient(MQTTProperties.HOST_NAME);
+            _options = messageBuilder.Build();
 
-            LogMQTT($"{Indent.ESCAPE}ClientID = {MQTTProperties.CLIENT_ID}", ConsoleColor.Yellow);
-            LogMQTT($"{Indent.ESCAPE}Hostname = {MQTTProperties.HOST_NAME}", ConsoleColor.Yellow);
+            _factory = new MqttFactory();
 
-            while (!_mqttClient.IsConnected)
-            {
-                try
-                {
-                    LogMQTTIniciandoConexao($"{Indent.ESCAPE}Iniciando conexao...", ConsoleColor.Yellow);
-                }
-                catch (Exception ex)
-                {
-                    LogMQTT($"Erro ao estabelecer conexão!!!", ConsoleColor.DarkRed);
-                    LogMQTT($"ErrorMessage: {ex.Message}", ConsoleColor.DarkRed);
-                    LogMQTT($"InnerException: {ex.InnerException.Message} \n", ConsoleColor.DarkRed);
-                };
-            }
+            LogMqtt("Instanciando client MQTT...", ConsoleColor.Yellow);
+            LogMqtt($"{Indent.ESCAPE}ClientID = {MQTTProperties.CLIENT_ID}", ConsoleColor.Yellow);
+            LogMqtt($"{Indent.ESCAPE}Hostname = {MQTTProperties.HOST_NAME}", ConsoleColor.Yellow);
+
+            _client = _factory.CreateMqttClient();
+        }
+
+        public static async Task SubscribeAsync(string topic, int qos = 2)
+        {
+            await _client.SubscribeAsync(MQTTProperties.TOPIC_NAME, MqttQualityOfServiceLevel.ExactlyOnce);
         }
 
         private static void LogMQTT(string textParameter, ConsoleColor cor)
@@ -59,7 +66,33 @@ namespace ReadMessageSendPushNotification
             Console.ResetColor();
         }
 
-        private static void LogMQTTIniciandoConexao(string textParameter, ConsoleColor cor)
+        private static async Task LogStartMqttConnection()
+        {
+            while (!_client.IsConnected)
+            {
+                try
+                {
+                    await _client.ConnectAsync(_options, CancellationToken.None);
+
+                    await LogIniciandoConexaoAsync($"{Indent.ESCAPE}Iniciando conexao...", ConsoleColor.Yellow);
+                }
+                catch (Exception ex)
+                {
+                    LogMqtt($"Erro ao estabelecer conexão!!!", ConsoleColor.DarkRed);
+                    LogMqtt($"ErrorMessage: {ex.Message}", ConsoleColor.DarkRed);
+                    LogMqtt($"InnerException: {ex.InnerException.Message} \n", ConsoleColor.DarkRed);
+                };
+            }
+        }
+
+        private static void LogMqtt(string textParameter, ConsoleColor cor)
+        {
+            Console.ForegroundColor = cor;
+            Console.WriteLine($"{textParameter}");
+            Console.ResetColor();
+        }
+
+        private static async Task LogIniciandoConexaoAsync(string textParameter, ConsoleColor cor)
         {
             Console.ForegroundColor = cor;
             Console.WriteLine($"{textParameter}");
@@ -67,40 +100,56 @@ namespace ReadMessageSendPushNotification
 
             for (int i = 0; i < 3; i++)
             {
-                LogMQTT($"{Indent.ESCAPE}...", ConsoleColor.Yellow);
+                LogMqtt($"{Indent.ESCAPE}...", ConsoleColor.Yellow);
                 Task.Delay(500).Wait();
             }
 
-            _mqttClient.Connect(MQTTProperties.CLIENT_ID);
-
-            if (_mqttClient.IsConnected)
+            if (_client.IsConnected)
             {
-                _mqttClient.Subscribe(new String[] { MQTTProperties.TOPIC_NAME }, new byte[] { MqttMsgBase.QOS_LEVEL_EXACTLY_ONCE });
+                await SubscribeAsync(MQTTProperties.TOPIC_NAME);
 
-                LogMQTT("Conexao bem sucedida!", ConsoleColor.DarkGreen);
-                LogMQTT($"Subscriber: {MQTTProperties.TOPIC_NAME}", ConsoleColor.DarkGreen);
+                LogMqtt("Conexao bem sucedida!", ConsoleColor.DarkGreen);
+                LogMqtt($"Subscriber: {MQTTProperties.TOPIC_NAME}", ConsoleColor.DarkGreen);
             }
         }
 
-        private static void SendPushNotification()
+        private static async Task GetMessages()
         {
-            _mqttClient.MqttMsgPublishReceived += ReadMessage;
+            if (!_client.IsConnected)
+                await TryToReconnectAsync();
+
+            _client.UseApplicationMessageReceivedHandler(e =>
+            {
+                try
+                {
+                    string message = Encoding.UTF8.GetString(e.ApplicationMessage.Payload);
+                    Console.WriteLine($"\nNOVA MENSAGEM: {message}");
+                    Send3Notifications().Wait();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine(ex.Message, ex);
+                }
+            });
         }
 
-        private static void ReadMessage(object sender, MqttMsgPublishEventArgs e)
+        static async Task TryToReconnectAsync()
         {
-            var message = Encoding.Default.GetString(e.Message);
-
-            if (!MESSAGES.Contains(message))
+            try
             {
-                MESSAGES.Add(message);
-                Console.WriteLine($"\nNOVA MENSAGEM: {message}");
+                LogMQTT($"Reconectando...", ConsoleColor.Yellow);
 
-                Send3Notifications().Wait();
+                await _client.ConnectAsync(_options, CancellationToken.None);
+
+                if (_client.IsConnected)
+                    LogMQTT("Sucesso!", ConsoleColor.DarkGreen);
             }
-
-            else
-                return;
+            catch (Exception ex)
+            {
+                LogMQTT($"Erro ao estabelecer conexão!!!", ConsoleColor.DarkRed);
+                LogMQTT($"ErrorMessage: {ex.Message}", ConsoleColor.DarkRed);
+                LogMQTT($"InnerException: {ex.InnerException?.Message} \n", ConsoleColor.DarkRed);
+            };
         }
 
         private static async Task Send3Notifications()

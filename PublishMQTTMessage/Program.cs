@@ -1,8 +1,6 @@
 ﻿using PublishMQTTMessage.Model;
 using System;
-using System.Collections.Generic;
 using System.IO.Ports;
-using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -127,10 +125,32 @@ namespace PublishMQTTMessage
 
             LogMQTT($"{Indent.ESCAPE}Topic: {MQTTProperties.TOPIC_NAME}", ConsoleColor.Yellow);
             LogMQTT($"{Indent.ESCAPE}Publicando mensagem '{message}'...", ConsoleColor.Yellow);
+            
+            while (!_mqttClient.IsConnected)
+                TryToReconnect();
 
             _mqttClient.Publish(MQTTProperties.TOPIC_NAME, MESSAGE_TO_BYTES, MqttMsgBase.QOS_LEVEL_EXACTLY_ONCE, true);
 
             LogMQTT($@"{Indent.ESCAPE}Mensagem publicada!", ConsoleColor.DarkGreen);
+        }
+
+        private static void TryToReconnect()
+        {
+            try
+            {
+                LogMQTT($"Reconectando...", ConsoleColor.Yellow);
+
+                _mqttClient.Connect(MQTTProperties.CLIENT_ID);
+
+                if (_mqttClient.IsConnected)
+                    LogMQTT("Sucesso!", ConsoleColor.DarkGreen);
+            }
+            catch (Exception ex)
+            {
+                LogMQTT($"Erro ao estabelecer conexão!!!", ConsoleColor.DarkRed);
+                LogMQTT($"ErrorMessage: {ex.Message}", ConsoleColor.DarkRed);
+                LogMQTT($"InnerException: {ex.InnerException.Message} \n", ConsoleColor.DarkRed);
+            };
         }
 
         static void MessageToBytes(out string message)
